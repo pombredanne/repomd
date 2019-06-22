@@ -1,9 +1,10 @@
-from datetime import datetime
-from functools import partial
-from gzip import GzipFile
-from io import BytesIO
-from urllib.request import urlopen
-from lxml import etree
+import datetime
+import gzip
+import io
+import defusedxml.lxml
+import pathlib
+import urllib.request
+import urllib.parse
 
 
 _ns = {
@@ -13,36 +14,47 @@ _ns = {
 }
 
 
+def load(baseurl):
+    # parse baseurl to allow manipulating the path
+    base = urllib.parse.urlparse(baseurl)
+    path = pathlib.PurePosixPath(base.path)
+
+    # first we must get the repomd.xml file
+    repomd_path = path / 'repodata' / 'repomd.xml'
+    repomd_url = base._replace(path=str(repomd_path)).geturl()
+
+    # download and parse repomd.xml
+    with urllib.request.urlopen(repomd_url) as response:
+        repomd_xml = defusedxml.lxml.fromstring(response.read())
+
+    # determine the location of *primary.xml.gz
+    primary_element = repomd_xml.find('repo:data[@type="primary"]/repo:location', namespaces=_ns)
+    primary_path = path / primary_element.get('href')
+    primary_url = base._replace(path=str(primary_path)).geturl()
+
+    # download and parse *-primary.xml
+    with urllib.request.urlopen(primary_url) as response:
+        with io.BytesIO(response.read()) as compressed:
+            with gzip.GzipFile(fileobj=compressed) as uncompressed:
+                metadata = defusedxml.lxml.fromstring(uncompressed.read())
+
+    return Repo(baseurl, metadata)
+
+
 class Repo:
     """A dnf/yum repository."""
 
     __slots__ = ['baseurl', '_metadata']
 
-    def __init__(self, baseurl, lazy=False):
+    def __init__(self, baseurl, metadata):
         self.baseurl = baseurl
-        self._metadata = None
-        if not lazy:
-            self.load()
-
-    def load(self):
-        # download and parse repomd.xml
-        with urlopen(f'{self.baseurl}/repodata/repomd.xml') as response:
-            repomd_xml = etree.fromstring(response.read())
-
-        # determine the location of *primary.xml.gz
-        location = repomd_xml.find('repo:data[@type="primary"]/repo:location', namespaces=_ns).get('href')
-
-        # download and parse *-primary.xml
-        with urlopen(f'{self.baseurl}/{location}') as response:
-            with BytesIO(response.read()) as compressed:
-                with GzipFile(fileobj=compressed) as uncompressed:
-                    self._metadata = etree.fromstring(uncompressed.read())
+        self._metadata = metadata
 
     def __repr__(self):
         return f'<{self.__class__.__name__}: "{self.baseurl}">'
 
     def __str__(self):
-        return f'{self.baseurl}'
+        return self.baseurl
 
     def __len__(self):
         return int(self._metadata.get('packages'))
@@ -68,84 +80,111 @@ class Repo:
 class Package:
     """An RPM package from a repository."""
 
-    __slots__ = [
-        'name',
-        'arch',
-        'summary',
-        'description',
-        'packager',
-        'url',
-        'license',
-        'vendor',
-        'sourcerpm',
-        'epoch',
-        'version',
-        'release',
-        'build_time',
-        'location',
-    ]
+    __slots__ = ['_element']
 
     def __init__(self, element):
-        find = partial(element.find, namespaces=_ns)
-        findtext = partial(element.findtext, namespaces=_ns)
+        self._element = element
 
-        for attr in 'name', 'arch', 'summary', 'description', 'packager', 'url':
-            super().__setattr__(attr, findtext(f'common:{attr}'))
+    @property
+    def name(self):
+        return self._element.findtext('common:name', namespaces=_ns)
 
-        for attr in 'license', 'vendor', 'sourcerpm':
-            super().__setattr__(attr, findtext(f'common:format/rpm:{attr}'))
+    @property
+    def arch(self):
+        return self._element.findtext('common:arch', namespaces=_ns)
 
-        version = find('common:version')
-        super().__setattr__('epoch', version.get('epoch'))
-        super().__setattr__('version', version.get('ver'))
-        super().__setattr__('release', version.get('rel'))
+    @property
+    def summary(self):
+        return self._element.findtext('common:summary', namespaces=_ns)
 
-        build_time = find('common:time').get('build')
-        super().__setattr__('build_time', datetime.fromtimestamp(int(build_time)))
+    @property
+    def description(self):
+        return self._element.findtext('common:description', namespaces=_ns)
 
-        super().__setattr__('location', find('common:location').get('href'))
+    @property
+    def packager(self):
+        return self._element.findtext('common:packager', namespaces=_ns)
 
-    def __setattr__(self, *_):
-        raise AttributeError(f'{self.__class__.__name__} instances are read-only')
+    @property
+    def url(self):
+        return self._element.findtext('common:url', namespaces=_ns)
 
-    __delattr__ = __setattr__
+    @property
+    def license(self):
+        return self._element.findtext('common:format/rpm:license', namespaces=_ns)
 
-    def __copy__(self):
-        # default copy stops working with our __setattr__
-        cls = type(self)
-        c = cls.__new__(cls)
-        for attr in cls.__slots__:
-            object.__setattr__(c, attr, getattr(self, attr))
-        return c
+    @property
+    def vendor(self):
+        return self._element.findtext('common:format/rpm:vendor', namespaces=_ns)
+
+    @property
+    def sourcerpm(self):
+        return self._element.findtext('common:format/rpm:sourcerpm', namespaces=_ns)
+
+    @property
+    def build_time(self):
+        build_time = self._element.find('common:time', namespaces=_ns).get('build')
+        return datetime.datetime.fromtimestamp(int(build_time))
+
+    @property
+    def location(self):
+        return self._element.find('common:location', namespaces=_ns).get('href')
+
+    @property
+    def _version_info(self):
+        return self._element.find('common:version', namespaces=_ns)
+
+    @property
+    def epoch(self):
+        return self._version_info.get('epoch')
+
+    @property
+    def version(self):
+        return self._version_info.get('ver')
+
+    @property
+    def release(self):
+        return self._version_info.get('rel')
+
+    @property
+    def vr(self):
+        version_info = self._version_info
+        v = version_info.get('ver')
+        r = version_info.get('rel')
+        return f'{v}-{r}'
+
+    @property
+    def nvr(self):
+        return f'{self.name}-{self.vr}'
+
+    @property
+    def evr(self):
+        version_info = self._version_info
+        e = version_info.get('epoch')
+        v = version_info.get('ver')
+        r = version_info.get('rel')
+        if int(e):
+            return f'{e}:{v}-{r}'
+        else:
+            return f'{v}-{r}'
+
+    @property
+    def nevr(self):
+        return f'{self.name}-{self.evr}'
 
     @property
     def nevra(self):
         return f'{self.nevr}.{self.arch}'
 
     @property
-    def nevra_tuple(self):
+    def _nevra_tuple(self):
         return self.name, self.epoch, self.version, self.release, self.arch
 
-    @property
-    def nevr(self):
-        if int(self.epoch):
-            return f'{self.name}-{self.epoch}:{self.version}-{self.release}'
-        else:
-            return f'{self.name}-{self.version}-{self.release}'
+    def __eq__(self, other):
+        return self._nevra_tuple == other._nevra_tuple
 
-    @property
-    def nvr(self):
-        return f'{self.name}-{self.version}-{self.release}'
-
-    @property
-    def vr(self):
-        return f'{self.version}-{self.release}'
+    def __hash__(self):
+        return hash(self._nevra_tuple)
 
     def __repr__(self):
         return f'<{self.__class__.__name__}: "{self.nevra}">'
-
-    def __eq__(self, other):
-        return self.nevra_tuple == other.nevra_tuple
-
-    def __hash__(self):
-        return hash(self.nevra_tuple)

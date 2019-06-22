@@ -1,59 +1,68 @@
-[![travis-ci.org](https://img.shields.io/travis/carlwgeorge/repomd.svg)](https://travis-ci.org/carlwgeorge/repomd)
-[![codecov.io](https://img.shields.io/codecov/c/github/carlwgeorge/repomd.svg)](https://codecov.io/gh/carlwgeorge/repomd)
-
 # repomd
+
+[![build status](https://api.cirrus-ci.com/github/carlwgeorge/repomd.svg)](https://cirrus-ci.com/github/carlwgeorge/repomd/master)
+[![pypi](https://img.shields.io/pypi/v/repomd.svg)](https://pypi.org/project/repomd/)
+[![fedora](https://img.shields.io/badge/RPM-Fedora-blue.svg)](https://src.fedoraproject.org/rpms/python-repomd)
 
 This library provides an object-oriented interface to get information out of dnf/yum repositories.
 
 ## Usage
 
-Import the Repo class from the module.
-
 ```python
->>> from repomd import Repo
+>>> import repomd
+
+>>> repo = repomd.load('https://mirror.rackspace.com/centos/7/updates/x86_64/')
+
+>>> repo
+<Repo: "https://mirror.rackspace.com/centos/7/updates/x86_64/">
 ```
 
-Create a repo instance from the baseurl of the repo.
-
-```python
->>> repo = Repo('http://mirror.centos.org/centos/7/os/x86_64')
-```
-
-Optionally, you can delay loading of the repo metadata.
-
-```python
->>> repo = Repo('http://mirror.centos.org/centos/7/os/x86_64', lazy=True)
->>> repo.load()
-```
-
-The length of the repo object indicates the number of packages in the repo.
+The length of the `Repo` object indicates the number of packages in the repository.
 
 ```python
 >>> len(repo)
-9591
+1602
 ```
 
-Find a package.
+Find a package by name.
 
 ```python
->>> repo.find('openssl-libs')
-<Package: "openssl-libs-1:1.0.2k-8.el7.x86_64">
+>>> repo.find('systemd')
+<Package: "systemd-219-57.el7_5.3.x86_64">
 ```
 
-Find all packages.
+Find all packages of a given name.
 
 ```python
->>> repo.findall('openssl-libs')
-[<Package: "openssl-libs-1:1.0.2k-8.el7.i686">, <Package: "openssl-libs-1:1.0.2k-8.el7.x86_64">]
+>>> repo.findall('systemd')
+[<Package: "systemd-219-57.el7_5.1.x86_64">, <Package: "systemd-219-57.el7_5.3.x86_64">]
 ```
 
-Iterate through packages in the repo.
+A `Package` instance has many useful properties.
+
+```python
+>>> package = repo.find('systemd')
+
+>>> package.name
+'systemd'
+
+>>> package.version
+'219'
+
+>>> package.build_time
+datetime.datetime(2018, 9, 26, 14, 11, 37)
+
+>>> package.nevr
+'systemd-219-57.el7_5.3'
+```
+
+Iterate through packages in the repository.
 
 ```python
 >>> for package in repo:
-...     print(package.name)
-389-ds-base
-389-ds-base-devel
-389-ds-base-libs
+...     print(package.nvr)
+389-ds-base-1.3.7.5-19.el7_5
+389-ds-base-1.3.7.5-21.el7_5
+389-ds-base-1.3.7.5-24.el7_5
 (and so on)
 ```
